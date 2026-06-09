@@ -129,16 +129,43 @@ def score_answer(text: str, inst: dict) -> dict:
     return {"full": correct == total, "cell": correct / total if total else 0.0}
 
 
+def _norm_constraint(s: str):
+    """Canonicalize a constraint string so extraction is graded by MEANING, not
+    exact format: drop the category label (the model names categories its own
+    way), lowercase values, fold 'right'->reversed 'left', and sort the operands
+    of symmetric relations. (Caveat: dropping the category slightly over-credits
+    when one value lives in two categories, e.g. 'red'; rare.)"""
+    parts = s.split("|")
+    if len(parts) < 3:
+        return None
+    rel = parts[0].strip().lower()
+
+    def op(x: str):
+        x = x.strip()
+        cat, val = x.split("::", 1) if "::" in x else ("", x)
+        val = val.strip().lower()
+        return ("H", val) if cat.strip().lower() == "house" else ("V", val)
+
+    a, b = op(parts[1]), op(parts[2])
+    dpart = parts[3].strip() if len(parts) > 3 else ""
+    d = int(dpart) if dpart.lstrip("-").isdigit() else 0
+    if rel in ("right", "dright"):
+        rel, a, b = ("left" if rel == "right" else "dleft"), b, a
+    if rel in ("eq", "neq", "adj", "dist"):
+        a, b = tuple(sorted((a, b)))
+    return (rel, a, b, d)
+
+
 def score_extraction(text: str, inst: dict) -> dict:
     m = re.search(r"\[.*\]", text, re.DOTALL)
-    gold = set(inst["constraints"])
+    gold = {_norm_constraint(s) for s in inst["constraints"]} - {None}
     if not m:
         return {"recall": 0.0, "exact": False}
     try:
         arr = json.loads(m.group(0))
     except json.JSONDecodeError:
         return {"recall": 0.0, "exact": False}
-    got = {x for x in arr if isinstance(x, str)} if isinstance(arr, list) else set()
+    got = ({_norm_constraint(x) for x in arr if isinstance(x, str)} - {None}) if isinstance(arr, list) else set()
     return {"recall": len(got & gold) / len(gold) if gold else 1.0, "exact": got == gold}
 
 
