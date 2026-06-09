@@ -169,7 +169,7 @@ class MockModel:
     def generate(self, prompt: str) -> str:
         return self.by_prompt.get(prompt, "[]")
 
-    def generate_many(self, prompts: list[str]) -> list[str]:
+    def generate_many(self, prompts: list[str], label: str = "") -> list[str]:
         return [self.generate(p) for p in prompts]
 
 

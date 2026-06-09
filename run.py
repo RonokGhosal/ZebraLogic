@@ -41,9 +41,9 @@ def mean(xs):
 
 
 def run_zebra(insts, model):
-    rA = model.generate_many([Z.prompt_A(i) for i in insts])
-    rB = model.generate_many([Z.prompt_B(i) for i in insts])
-    rC = model.generate_many([Z.prompt_C(i) for i in insts])
+    rA = model.generate_many([Z.prompt_A(i) for i in insts], "zebra-A")
+    rB = model.generate_many([Z.prompt_B(i) for i in insts], "zebra-B")
+    rC = model.generate_many([Z.prompt_C(i) for i in insts], "zebra-C")
     rows = []
     for i, a, b, c in zip(insts, rA, rB, rC):
         sa, sb, sc = Z.score_answer(a, i), Z.score_answer(b, i), Z.score_extraction(c, i)
@@ -56,9 +56,9 @@ def run_zebra(insts, model):
 
 
 def run_tcp(insts, model):
-    rA = model.generate_many([TC.prompt_A(i) for i in insts])
-    rB = model.generate_many([TC.prompt_B(i) for i in insts])
-    rC = model.generate_many([TC.prompt_C(i) for i in insts])
+    rA = model.generate_many([TC.prompt_A(i) for i in insts], "tcp-A")
+    rB = model.generate_many([TC.prompt_B(i) for i in insts], "tcp-B")
+    rC = model.generate_many([TC.prompt_C(i) for i in insts], "tcp-C")
     rows = []
     for i, a, b, c in zip(insts, rA, rB, rC):
         rows.append(
@@ -73,6 +73,7 @@ def run_tcp(insts, model):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, default=2, help="scale: zebra=n/size, tcp=10n/regime")
+    ap.add_argument("--limit", type=int, default=None, help="hard cap on instances per benchmark (fast first pass)")
     ap.add_argument("--model", default="Qwen/Qwen3-14B")
     ap.add_argument("--base-url", default="http://localhost:8000/v1")
     ap.add_argument("--mock", action="store_true")
@@ -81,6 +82,8 @@ def main():
     print("loading benchmarks (parsing + solving gold)...", flush=True)
     zb = stratified(Z.load_zebra(), lambda d: d["size"], args.n)
     tc = stratified(TC.load_tcp(), lambda d: d["regime"], args.n * 10)
+    if args.limit:
+        zb, tc = zb[: args.limit], tc[: args.limit]
     print(f"  ZebraLogic: {len(zb)} instances | TCP: {len(tc)} instances", flush=True)
 
     if args.mock:
@@ -92,7 +95,8 @@ def main():
     t0 = time.time()
     print("running ZebraLogic...", flush=True)
     zrows = run_zebra(zb, zmodel)
-    print("running TCP...", flush=True)
+    json.dump({"zebra": zrows, "tcp": []}, open("results.json", "w"), indent=1)  # partial save
+    print(f"  ZebraLogic done ({time.time()-t0:.0f}s); running TCP...", flush=True)
     trows = run_tcp(tc, tmodel)
     print(f"done in {time.time()-t0:.0f}s", flush=True)
 

@@ -8,7 +8,8 @@ the final answer. Requests are issued concurrently so vLLM can batch them.
 from __future__ import annotations
 
 import re
-from concurrent.futures import ThreadPoolExecutor
+import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import httpx
 
@@ -21,7 +22,7 @@ class VLLMModel:
         max_tokens: int = 6000,
         temperature: float = 0.0,
         timeout: float = 900.0,
-        workers: int = 16,
+        workers: int = 4,
     ):
         self.url = base_url.rstrip("/") + "/chat/completions"
         self.model = model
@@ -47,6 +48,14 @@ class VLLMModel:
             return f"[ERROR {e}]"
         return re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
 
-    def generate_many(self, prompts: list[str]) -> list[str]:
+    def generate_many(self, prompts: list[str], label: str = "") -> list[str]:
+        results: list[str] = [""] * len(prompts)
+        done = 0
         with ThreadPoolExecutor(max_workers=self.workers) as ex:
-            return list(ex.map(self.generate, prompts))
+            futs = {ex.submit(self.generate, p): i for i, p in enumerate(prompts)}
+            for fut in as_completed(futs):
+                results[futs[fut]] = fut.result()
+                done += 1
+                print(f"\r    {label} {done}/{len(prompts)} calls", end="", flush=True)
+        sys.stdout.write("\n")
+        return results
