@@ -50,7 +50,7 @@ def run_zebra(insts, model):
         rows.append(
             {"id": i["id"], "size": i["size"], "A_full": sa["full"], "A_cell": sa["cell"],
              "B_full": sb["full"], "B_cell": sb["cell"], "C_recall": sc["recall"],
-             "rawA": a, "rawC": c}
+             "rawA": a, "rawB": b, "rawC": c}
         )
     return rows
 
@@ -65,7 +65,7 @@ def run_tcp(insts, model):
             {"id": i["id"], "regime": i["regime"],
              "A": TC.score_answer(a, i["gold"], i["regime"]),
              "B": TC.score_answer(b, i["gold"], i["regime"]),
-             "C": TC.score_extraction(c, i["spec"]), "rawA": a, "rawC": c}
+             "C": TC.score_extraction(c, i["spec"]), "rawA": a, "rawB": b, "rawC": c}
         )
     return rows
 
