@@ -140,22 +140,30 @@ def score_extraction(pred_text: str, spec: dict) -> dict:
     """Per-field correctness of the model's extracted spec vs gold. Each value is
     True/False (or None if unparseable)."""
     pred = _extract_json(pred_text)
-    if pred is None:
+    if not isinstance(pred, dict):
         return {"parse": False}
     res = {"parse": True}
     res["tasks"] = pred.get("tasks") == spec["tasks"]
-    got_deps = sorted(tuple(d) for d in (pred.get("dependencies") or []))
+    try:
+        got_deps = sorted(tuple(d) for d in (pred.get("dependencies") or []) if isinstance(d, (list, tuple)))
+    except TypeError:
+        got_deps = []
     res["dependencies"] = got_deps == [list(x) for x in spec["dependencies"]] or got_deps == spec["dependencies"]
-    # per-agent constraint fields
-    gc, pc = spec["agent_constraints"], (pred.get("agent_constraints") or {})
+    # per-agent constraint fields (defensive: a real model may not return dict-shaped data)
+    gc = spec["agent_constraints"]
+    pc = pred.get("agent_constraints")
+    pc = pc if isinstance(pc, dict) else {}
+
+    def _d(m, a):  # the agent's constraint dict, or {} if the model returned something else
+        v = m.get(a) if isinstance(m, dict) else None
+        return v if isinstance(v, dict) else {}
+
     fields = ["working_hours", "lunch_break", "max_consecutive", "break_after", "break_between"]
     for f in fields:
-        gold_vals = {a: gc.get(a, {}).get(f) for a in spec["agents"] if gc.get(a, {}).get(f) is not None}
+        gold_vals = {a: _d(gc, a).get(f) for a in spec["agents"] if _d(gc, a).get(f) is not None}
         if not gold_vals:
             continue
-        res[f] = all(
-            (pc.get(a, {}) or {}).get(f) == v for a, v in gold_vals.items()
-        )
+        res[f] = all(_d(pc, a).get(f) == v for a, v in gold_vals.items())
     return res
 
 

@@ -135,9 +135,10 @@ def score_extraction(text: str, inst: dict) -> dict:
     if not m:
         return {"recall": 0.0, "exact": False}
     try:
-        got = set(json.loads(m.group(0)))
+        arr = json.loads(m.group(0))
     except json.JSONDecodeError:
         return {"recall": 0.0, "exact": False}
+    got = {x for x in arr if isinstance(x, str)} if isinstance(arr, list) else set()
     return {"recall": len(got & gold) / len(gold) if gold else 1.0, "exact": got == gold}
 
 
