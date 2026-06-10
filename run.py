@@ -70,6 +70,36 @@ def run_tcp(insts, model):
     return rows
 
 
+def run_referee_mode(args):
+    from zebralogic import referee as R
+    from zebralogic.model_client import VLLMModel
+
+    print("loading ZebraLogic (parsing + solving gold)...", flush=True)
+    zb = stratified(Z.load_zebra(), lambda d: d["size"], args.n)
+    if args.limit:
+        zb = zb[: args.limit]
+    print(f"  referee on {len(zb)} puzzles (max_retries={args.retries})", flush=True)
+    model = VLLMModel(base_url=args.base_url, model=args.model, max_tokens=args.max_tokens)
+    t0 = time.time()
+    rows = R.compare(zb, model, max_retries=args.retries, workers=model.workers)
+    print(f"done in {time.time()-t0:.0f}s", flush=True)
+
+    raw, ref = mean(r["raw_full"] for r in rows), mean(r["ref_full"] for r in rows)
+    print("\n=========  REFEREE (ZebraLogic)  =========")
+    print(f"  raw Qwen  : {raw}")
+    print(f"  refereed  : {ref}   (lift {ref - raw:+.3f})")
+    print(f"  converged : {mean(r['converged'] for r in rows)} | avg attempts {mean(r['attempts'] for r in rows)}")
+    by = collections.defaultdict(list)
+    for r in rows:
+        by[r["size"]].append(r)
+    print("  by size (raw -> ref):")
+    for s in sorted(by):
+        g = by[s]
+        print(f"    {s}: {mean(x['raw_full'] for x in g)} -> {mean(x['ref_full'] for x in g)}")
+    json.dump(rows, open("results_referee.json", "w"), indent=1)
+    print("\nsaved results_referee.json")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, default=2, help="scale: zebra=n/size, tcp=10n/regime")
@@ -78,7 +108,13 @@ def main():
     ap.add_argument("--base-url", default="http://localhost:8000/v1")
     ap.add_argument("--max-tokens", type=int, default=8000, help="answer budget (raise if answers come back empty)")
     ap.add_argument("--mock", action="store_true")
+    ap.add_argument("--referee", action="store_true", help="run the referee (raw vs refereed ZebraLogic) instead of A/B/C")
+    ap.add_argument("--retries", type=int, default=3, help="referee: max retries per puzzle")
     args = ap.parse_args()
+
+    if args.referee:
+        run_referee_mode(args)
+        return
 
     print("loading benchmarks (parsing + solving gold)...", flush=True)
     zb = stratified(Z.load_zebra(), lambda d: d["size"], args.n)
