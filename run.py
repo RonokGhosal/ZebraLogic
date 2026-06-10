@@ -76,6 +76,7 @@ def main():
     ap.add_argument("--limit", type=int, default=None, help="hard cap on instances per benchmark (fast first pass)")
     ap.add_argument("--model", default="Qwen/Qwen3-14B")
     ap.add_argument("--base-url", default="http://localhost:8000/v1")
+    ap.add_argument("--max-tokens", type=int, default=8000, help="answer budget (raise if answers come back empty)")
     ap.add_argument("--mock", action="store_true")
     args = ap.parse_args()
 
@@ -90,7 +91,7 @@ def main():
         zmodel, tmodel = Z.MockModel(zb), TC.MockModel(tc)
     else:
         from zebralogic.model_client import VLLMModel
-        zmodel = tmodel = VLLMModel(base_url=args.base_url, model=args.model)
+        zmodel = tmodel = VLLMModel(base_url=args.base_url, model=args.model, max_tokens=args.max_tokens)
 
     t0 = time.time()
     print("running ZebraLogic...", flush=True)

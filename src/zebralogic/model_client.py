@@ -19,7 +19,7 @@ class VLLMModel:
         self,
         base_url: str = "http://localhost:8000/v1",
         model: str = "Qwen/Qwen3-14B",
-        max_tokens: int = 6000,
+        max_tokens: int = 8000,
         temperature: float = 0.0,
         timeout: float = 900.0,
         workers: int = 4,
