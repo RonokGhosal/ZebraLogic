@@ -90,7 +90,10 @@ def solve_with_referee(inst: dict, model, max_retries: int = 3) -> dict:
     prompt = base
     texts: list[str] = []
     for attempt in range(max_retries + 1):
-        text = model.generate(prompt)
+        try:
+            text = model.generate(prompt, label=f"referee {inst['id']} try{attempt + 1}")
+        except TypeError:  # models without a label kwarg (mocks)
+            text = model.generate(prompt)
         texts.append(text)
         grid = _parse_grid(text)
         bad = list(constraints) if grid is None else violations(constraints, grid)
@@ -100,13 +103,18 @@ def solve_with_referee(inst: dict, model, max_retries: int = 3) -> dict:
     return {"texts": texts, "final": texts[-1], "attempts": max_retries + 1, "converged": False}
 
 
-def compare(instances: list[dict], model, max_retries: int = 3, workers: int = 4) -> list[dict]:
+def compare(instances: list[dict], model, max_retries: int = 3, workers: int = 4,
+            progress=None, save=None) -> list[dict]:
     """Raw Qwen (first attempt) vs refereed Qwen, scored against gold. The per-
-    puzzle referee loops are independent, so they run concurrently."""
+    puzzle referee loops are independent, so they run concurrently. Rows are
+    reported to `progress` and re-`save`d after every finished puzzle."""
     import sys
+    import threading
+    import time
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     def one(inst):
+        t0 = time.time()
         r = solve_with_referee(inst, model, max_retries)
         return {
             "id": inst["id"],
@@ -115,13 +123,19 @@ def compare(instances: list[dict], model, max_retries: int = 3, workers: int = 4
             "ref_full": score_answer(r["final"], inst)["full"],
             "attempts": r["attempts"],
             "converged": r["converged"],
-        }
+        }, time.time() - t0
 
-    rows, done = [], 0
+    rows, done, lock = [], 0, threading.Lock()
     with ThreadPoolExecutor(max_workers=workers) as ex:
         for fut in as_completed([ex.submit(one, i) for i in instances]):
-            rows.append(fut.result())
-            done += 1
+            row, secs = fut.result()
+            with lock:
+                rows.append(row)
+                done += 1
+                if progress:
+                    progress.item_done("referee", row, secs)
+                if save:
+                    save(rows)
             print(f"\r    referee {done}/{len(instances)} puzzles", end="", flush=True)
     sys.stdout.write("\n")
     return rows
