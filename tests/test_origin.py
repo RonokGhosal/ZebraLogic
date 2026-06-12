@@ -159,6 +159,52 @@ def test_run_one_unparseable_first_answer():
 
 
 # --------------------------------------------------------------------------- #
+# Cross-category value collisions: the oracle must look up by (category, value)
+# first — 21/774 dataset instances repeat a value across categories.
+# --------------------------------------------------------------------------- #
+
+NL_COLLIDE = """There are 2 houses, numbered 1 to 2 from left to right.
+ - Each person has a favorite color: `red`, `blue`
+ - People have unique hair colors: `red`, `brown`
+
+1. The person whose favorite color is red is in the first house.
+2. The person who has red hair is not in the first house.
+"""
+
+
+def test_violations_disambiguate_colliding_values():
+    from zebralogic.referee import cat_alias, violations
+
+    p, unparsed = build(NL_COLLIDE)
+    assert not unparsed
+    inst = {"nl": NL_COLLIDE, "categories": {"Color": ["red", "blue"],
+                                             "HairColor": ["red", "brown"]}}
+    alias = cat_alias(inst)
+    # correct grid: favorite-red in house 1, red hair in house 2
+    good = {1: {"Color": "red", "HairColor": "brown"},
+            2: {"Color": "blue", "HairColor": "red"}}
+    assert violations(p.constraints, good, alias) == []
+    # value-only legacy lookup gets this WRONG (red maps to one house only)
+    assert violations(p.constraints, good) != []
+    # and a genuinely wrong grid is still caught with the alias
+    bad = {1: {"Color": "blue", "HairColor": "red"},
+           2: {"Color": "red", "HairColor": "brown"}}
+    assert violations(p.constraints, bad, alias) != []
+
+
+def test_grade_read_format_tolerance():
+    by_no, _ = clue_map(NL)
+    gold2 = by_no[2][1]  # neq(Pet::dog, House::1)
+    # ordinal house word, 'house 1' phrasing, and a bare digit must not
+    # classify a correct reading as a misread
+    assert grade_read('["neq|Pet::dog|House::first|0"]', gold2)["ok"]
+    assert grade_read('["neq|Pet::dog|House::house 1|0"]', gold2)["ok"]
+    assert grade_read('["neq|Pet::dog|1|0"]', gold2)["ok"]
+    # but a genuinely different house number stays a misread
+    assert not grade_read('["neq|Pet::dog|House::second|0"]', gold2)["ok"]
+
+
+# --------------------------------------------------------------------------- #
 # 3. Fisher tail
 # --------------------------------------------------------------------------- #
 

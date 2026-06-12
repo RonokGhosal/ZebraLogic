@@ -21,32 +21,58 @@ from zebralogic.zebra_experiment import _parse_grid, prompt_A, score_answer
 from zebralogic.zebra_parser import build
 
 
-def _positions(grid: dict) -> dict[str, int]:
-    """Qwen's grid {house -> {cat: value}} -> {value(lowercased) -> house}."""
-    pos: dict[str, int] = {}
+def _positions(grid: dict):
+    """Qwen's grid {house -> {cat: value}} -> ({(cat, value) -> house},
+    {value -> house}), keys lowercased. The flat map alone is ambiguous when the
+    same value lives in two categories (e.g. 'alice' as a Name AND a child,
+    'red' as Color AND HairColor — 21/774 instances), so category-qualified
+    lookup must come first."""
+    bycat: dict[tuple[str, str], int] = {}
+    flat: dict[str, int] = {}
     for h, row in grid.items():
         if isinstance(row, dict):
-            for v in row.values():
-                pos[str(v).strip().lower()] = h
-    return pos
+            for c, v in row.items():
+                bycat[(str(c).strip().lower(), str(v).strip().lower())] = h
+                flat[str(v).strip().lower()] = h
+    return bycat, flat
 
 
-def _pos_of(operand, pos: dict[str, int]):
+def cat_alias(inst: dict) -> dict[str, str]:
+    """Parser constraints use the puzzle's LONG category names; the model's
+    grid uses the short names we gave it in the prompt. Both come from
+    load_zebra in the same order, so zip them."""
+    from zebralogic.zebra_parser import parse_header
+
+    _, cats = parse_header(inst["nl"])
+    return {long.strip().lower(): short.strip().lower()
+            for long, short in zip(cats, inst["categories"])}
+
+
+def _pos_of(operand, pos, alias: dict[str, str]):
     cat, val = operand
     if cat == HOUSE:
         try:
             return int(val)
         except (TypeError, ValueError):
             return None
-    return pos.get(str(val).strip().lower())
+    bycat, flat = pos
+    v = str(val).strip().lower()
+    short = alias.get(str(cat).strip().lower())
+    if short is not None and (short, v) in bycat:
+        return bycat[(short, v)]
+    return flat.get(v)  # model renamed the category: fall back to value-only
 
 
-def violations(constraints, grid: dict) -> list:
-    """Constraints the grid breaks (or whose values it failed to place)."""
+def violations(constraints, grid: dict, alias: dict[str, str] | None = None) -> list:
+    """Constraints the grid breaks (or whose values it failed to place).
+    Pass `alias` (see cat_alias) to disambiguate values that appear in more
+    than one category; without it, lookup is value-only (legacy behavior,
+    wrong on colliding puzzles)."""
     pos = _positions(grid)
+    alias = alias or {}
     bad = []
     for con in constraints:
-        pa, pb = _pos_of(con.a, pos), _pos_of(con.b, pos)
+        pa, pb = _pos_of(con.a, pos, alias), _pos_of(con.b, pos, alias)
         if pa is None or pb is None or not con.ok(pa, pb):
             bad.append(con)
     return bad
@@ -86,6 +112,7 @@ def solve_with_referee(inst: dict, model, max_retries: int = 3) -> dict:
     violation, names the broken clue and asks again. Returns all attempt texts +
     metadata. The answer key is never used or revealed."""
     constraints = build(inst["nl"])[0].constraints
+    alias = cat_alias(inst)
     base = prompt_A(inst)
     prompt = base
     texts: list[str] = []
@@ -96,7 +123,7 @@ def solve_with_referee(inst: dict, model, max_retries: int = 3) -> dict:
             text = model.generate(prompt)
         texts.append(text)
         grid = _parse_grid(text)
-        bad = list(constraints) if grid is None else violations(constraints, grid)
+        bad = list(constraints) if grid is None else violations(constraints, grid, alias)
         if not bad:
             return {"texts": texts, "final": text, "attempts": attempt + 1, "converged": True}
         prompt = f"{base}\n\nYour previous answer:\n{text}\n\n{feedback(bad)}"

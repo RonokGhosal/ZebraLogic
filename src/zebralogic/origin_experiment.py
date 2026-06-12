@@ -32,6 +32,7 @@ import json
 import re
 from math import comb
 
+from zebralogic.referee import cat_alias
 from zebralogic.referee import feedback as interp_feedback
 from zebralogic.referee import violations
 from zebralogic.zebra_experiment import (
@@ -56,7 +57,8 @@ def clue_map(nl: str):
     number. load_zebra only keeps fully-parsed puzzles, so every solver
     constraint traces back to exactly one numbered clue line."""
     _, cats = parse_header(nl)
-    by_no, by_con = {}, {}
+    by_no: dict[int, tuple] = {}
+    by_con: dict[object, int] = {}
     for no, text in enumerate(clue_lines(nl), start=1):
         cons = parse_clue(text, cats) or []
         by_no[no] = (text, cons)
@@ -80,6 +82,30 @@ def prompt_read(inst: dict, clue_text: str) -> str:
     )
 
 
+_ORDINALS = {"first": "1", "second": "2", "third": "3", "fourth": "4",
+             "fifth": "5", "sixth": "6", "seventh": "7", "eighth": "8", "ninth": "9"}
+
+
+def _norm_house_ops(con: tuple) -> tuple:
+    """A misread verdict must mean the model misread the CLUE, not the output
+    format: fold 'House::first' / 'House::house 2' to digits, and re-tag a
+    bare-digit operand as a house reference ('2' for 'House::2')."""
+    rel, a, b, d = con
+
+    def fix(op):
+        tag, v = op
+        m = re.search(r"\d+", v)
+        digit = m.group(0) if m else _ORDINALS.get(v.strip())
+        if tag == "H":
+            return ("H", digit) if digit else op
+        return ("H", digit) if (digit == v.strip() and digit) else op
+
+    a, b = fix(a), fix(b)
+    if rel in ("eq", "neq", "adj", "dist"):
+        a, b = tuple(sorted((a, b)))
+    return (rel, a, b, d)
+
+
 def grade_read(text: str, gold_cons: list) -> dict:
     """Meaning-level match (same normalizer as condition C) of the model's
     formalization against the parser's constraints for that clue."""
@@ -95,7 +121,10 @@ def grade_read(text: str, gold_cons: list) -> dict:
             pass
     if not got and "|" in text:  # bare string without JSON brackets
         got = {_norm_constraint(text.strip().strip('"'))} - {None}
-    return {"ok": bool(gold) and got == gold, "got": sorted(map(str, got))}
+    ok = bool(gold) and (got == gold
+                         or {_norm_house_ops(c) for c in got}
+                         == {_norm_house_ops(c) for c in gold})
+    return {"ok": ok, "got": sorted(map(str, got))}
 
 
 def prompt_localize(inst: dict, grid: dict) -> str:
@@ -148,12 +177,12 @@ def fb_location(bad: list, by_con: dict, by_no: dict) -> str:
 
 
 def run_arm(inst: dict, model, arm: str, first_text: str, constraints, by_con, by_no,
-            max_retries: int) -> dict:
+            max_retries: int, alias=None) -> dict:
     """Branch from the same failed first attempt; feedback is recomputed from
     the CURRENT grid's violations each round (binary stays constant)."""
     base = prompt_A(inst)
     texts, prev = [], first_text
-    bad = violations(constraints, _parse_grid(prev) or {})
+    bad = violations(constraints, _parse_grid(prev) or {}, alias)
     attempts = 0
     for attempt in range(max_retries):
         if arm == "binary":
@@ -171,7 +200,7 @@ def run_arm(inst: dict, model, arm: str, first_text: str, constraints, by_con, b
         attempts = attempt + 1
         prev = text
         grid = _parse_grid(text)
-        bad = list(constraints) if grid is None else violations(constraints, grid)
+        bad = list(constraints) if grid is None else violations(constraints, grid, alias)
         if not bad:
             break
     return {
@@ -196,6 +225,7 @@ def run_one(inst: dict, model, arms: list[str], max_retries: int = 3) -> dict:
 
     constraints = build(inst["nl"])[0].constraints
     by_no, by_con = clue_map(inst["nl"])
+    alias = cat_alias(inst)
 
     first = gen(prompt_A(inst), f"origin {inst['id']} solve")
     s0 = score_answer(first, inst)
@@ -209,7 +239,7 @@ def run_one(inst: dict, model, arms: list[str], max_retries: int = 3) -> dict:
         row["status"] = "no_parse"
         return row
 
-    bad0 = violations(constraints, grid0)
+    bad0 = violations(constraints, grid0, alias)
     if not bad0:  # wrong vs gold yet violates nothing: scorer/verifier mismatch
         row["status"] = "anomaly"
         return row
@@ -238,7 +268,7 @@ def run_one(inst: dict, model, arms: list[str], max_retries: int = 3) -> dict:
 
     # -- repair arms, each branching from the same first attempt --
     row["arms"] = {a: run_arm(inst, model, a, first, constraints, by_con, by_no,
-                              max_retries) for a in arms}
+                              max_retries, alias) for a in arms}
     return row
 
 
