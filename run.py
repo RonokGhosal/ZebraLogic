@@ -180,6 +180,34 @@ def run_referee_mode(args):
     print("\nsaved results_referee.json")
 
 
+def run_origin_mode(args):
+    from zebralogic import origin_experiment as O
+
+    progress = make_progress(args, "origin")
+    print("loading ZebraLogic (parsing + solving gold)...", flush=True)
+    sizes = [s.strip() for s in args.sizes.split(",") if s.strip()]
+    zb = stratified([i for i in Z.load_zebra() if i["size"] in sizes],
+                    lambda d: d["size"], args.n)
+    if args.limit:
+        zb = zb[: args.limit]
+    arms = [a.strip() for a in args.arms.split(",") if a.strip()]
+    print(f"  origin on {len(zb)} puzzles (sizes {sizes}, arms {arms}, "
+          f"max_retries={args.retries})", flush=True)
+    model = Z.MockModel(zb, mode="lossy") if args.mock else make_model(args, progress)
+    progress.add_total("origin", len(zb))
+    progress.set_phase("origin")
+    save = lambda rows: json.dump(rows, open("results_origin.json", "w"), indent=1)  # noqa: E731
+    t0 = time.time()
+    rows = O.run_origin(zb, model, arms, max_retries=args.retries,
+                        workers=getattr(model, "workers", 1), progress=progress, save=save)
+    progress.finish(ok=True)
+    print(f"done in {time.time()-t0:.0f}s", flush=True)
+    print(O.summarize(rows, arms))
+    print(truncation_summary(model))
+    json.dump(rows, open("results_origin.json", "w"), indent=1)
+    print("\nsaved results_origin.json (includes all raw outputs)")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, default=2, help="scale: zebra=n/size, tcp=10n/regime")
@@ -197,9 +225,18 @@ def main():
     ap.add_argument("--out", default="results.json", help="output file for A/B/C results")
     ap.add_argument("--mock", action="store_true")
     ap.add_argument("--referee", action="store_true", help="run the referee (raw vs refereed ZebraLogic) instead of A/B/C")
-    ap.add_argument("--retries", type=int, default=3, help="referee: max retries per puzzle")
+    ap.add_argument("--retries", type=int, default=3, help="referee/origin: max retries per puzzle")
+    ap.add_argument("--origin", action="store_true",
+                    help="run the error-origin experiment (misread vs reasoning failures; use --n ~20)")
+    ap.add_argument("--sizes", default="5*5,5*6,6*4,6*5,6*6",
+                    help="origin: comma-separated sizes to harvest failures from")
+    ap.add_argument("--arms", default="binary,location,interp",
+                    help="origin: feedback arms to run from each failure")
     args = ap.parse_args()
 
+    if args.origin:
+        run_origin_mode(args)
+        return
     if args.referee:
         run_referee_mode(args)
         return

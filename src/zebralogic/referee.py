@@ -123,6 +123,7 @@ def compare(instances: list[dict], model, max_retries: int = 3, workers: int = 4
             "ref_full": score_answer(r["final"], inst)["full"],
             "attempts": r["attempts"],
             "converged": r["converged"],
+            "texts": r["texts"],  # raw outputs: a weird number must be auditable
         }, time.time() - t0
 
     rows, done, lock = [], 0, threading.Lock()
