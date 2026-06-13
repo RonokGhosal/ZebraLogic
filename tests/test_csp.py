@@ -271,3 +271,30 @@ def test_engine_matches_bruteforce_over_random_puzzles():
             f"mismatch on constraints={p.constraints} "
             f"engine={len(engine)} brute={len(brute)}"
         )
+
+
+def _random_puzzle_sized(rng: random.Random, n: int, ncats: int) -> Puzzle:
+    cats = {f"C{i}": [f"C{i}_{j}" for j in range(n)] for i in range(ncats)}
+    p = Puzzle(n, cats)
+    allvars = list(p._varset)
+    kinds = ["eq", "neq", "left", "right", "adj", "notadj", "dleft", "dist"]
+    for _ in range(rng.randint(2, 8)):
+        a, b = rng.choice(allvars), rng.choice(allvars)
+        try:
+            p.add(Constraint(a, b, rng.choice(kinds), rng.randint(1, max(1, n - 1))))
+        except ValueError:
+            pass
+    return p
+
+
+def test_engine_matches_bruteforce_at_larger_n():
+    # The base property test stops at n<=3; gold for the real experiment is
+    # generated at up to n=6. Validate the engine still equals brute force at
+    # n=4,5 (bounded so CI stays fast; the full sweep lives offline).
+    rng = random.Random(20260612)
+    for n, ncats, count in [(4, 2, 100), (4, 3, 40), (5, 2, 40)]:
+        for _ in range(count):
+            p = _random_puzzle_sized(rng, n, ncats)
+            assert _norm(p.solve(limit=10**6)) == _norm(p.solve_bruteforce()), (
+                f"engine/brute mismatch at n={n} ncats={ncats}: {p.constraints}"
+            )
