@@ -116,15 +116,22 @@ def _parse_grid(text: str):
     return {i: row for i, row in enumerate(arr, start=1) if isinstance(row, dict)}
 
 
+def _norm_keys(row) -> dict:
+    """Lowercase/strip category keys so a model that renames a column ('name'
+    vs 'Name') isn't scored wrong for a correct solution (the oracle in
+    referee.violations already matches case-insensitively; the scorer must too)."""
+    return {str(k).strip().lower(): v for k, v in row.items()} if isinstance(row, dict) else {}
+
+
 def score_answer(text: str, inst: dict) -> dict:
     pred = _parse_grid(text)
     gold = inst["gold"]
     total = correct = 0
     for h, row in gold.items():
+        got = _norm_keys(pred.get(h) if pred else {})
         for c, v in row.items():
             total += 1
-            got = (pred.get(h) if pred else {}) or {}
-            if str(got.get(c, "")).strip().lower() == str(v).strip().lower():
+            if str(got.get(str(c).strip().lower(), "")).strip().lower() == str(v).strip().lower():
                 correct += 1
     return {"full": correct == total, "cell": correct / total if total else 0.0}
 

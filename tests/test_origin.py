@@ -192,6 +192,22 @@ def test_violations_disambiguate_colliding_values():
     assert violations(p.constraints, bad, alias) != []
 
 
+def test_score_answer_robust_to_key_rename():
+    from zebralogic.zebra_experiment import score_answer
+
+    correct = json.dumps([INST["gold"][1], INST["gold"][2]])
+    assert score_answer(correct, INST)["full"]
+    # same correct solution, category columns lower-cased / space-padded:
+    # a rename, not a wrong answer -> must still score full.
+    renamed = json.dumps([{"name": "Eric", " Pet ": "cat"},
+                          {"NAME": "Arnold", "pet": "dog"}])
+    assert score_answer(renamed, INST)["full"]
+    # a genuinely wrong value is still wrong despite a renamed key
+    wrong = json.dumps([{"name": "Arnold", "pet": "cat"},
+                        {"name": "Eric", "pet": "dog"}])
+    assert not score_answer(wrong, INST)["full"]
+
+
 def test_grade_read_format_tolerance():
     by_no, _ = clue_map(NL)
     gold2 = by_no[2][1]  # neq(Pet::dog, House::1)
