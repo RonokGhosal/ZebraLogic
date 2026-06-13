@@ -208,6 +208,34 @@ def run_origin_mode(args):
     print("\nsaved results_origin.json (includes all raw outputs)")
 
 
+def run_closer_mode(args):
+    from zebralogic import origin_experiment as O
+
+    progress = make_progress(args, "closer")
+    rows = json.load(open(args.from_results))
+    fails = [r for r in rows if r.get("status2") == "failure" and "misread2" in r]
+    print(f"  closer on {len(fails)} failures from {args.from_results} "
+          f"(max_retries={args.retries})", flush=True)
+    print("loading ZebraLogic (parsing + solving gold)...", flush=True)
+    insts = {i["id"]: i for i in Z.load_zebra()}
+    missing = [r["id"] for r in fails if r["id"] not in insts]
+    if missing:
+        raise SystemExit(f"failure ids not found in loader output: {missing}")
+    model = make_model(args, progress)
+    progress.add_total("closer", len(fails))
+    progress.set_phase("closer")
+    save = lambda rs: json.dump(rs, open("results_closer.json", "w"), indent=1)  # noqa: E731
+    t0 = time.time()
+    out = O.run_closer(fails, insts, model, max_retries=args.retries,
+                       workers=model.workers, progress=progress, save=save)
+    progress.finish(ok=True)
+    print(f"done in {time.time()-t0:.0f}s", flush=True)
+    print(O.summarize_closer(out))
+    print(truncation_summary(model))
+    json.dump(out, open("results_closer.json", "w"), indent=1)
+    print("\nsaved results_closer.json")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, default=2, help="scale: zebra=n/size, tcp=10n/regime")
@@ -232,8 +260,15 @@ def main():
                     help="origin: comma-separated sizes to harvest failures from")
     ap.add_argument("--arms", default="binary,location,interp",
                     help="origin: feedback arms to run from each failure")
+    ap.add_argument("--closer", action="store_true",
+                    help="run the closing experiment (self-referee + varied-seed) on the origin run's failures")
+    ap.add_argument("--from-results", default="results_origin_regraded.json",
+                    help="closer: regraded origin results to take failures from")
     args = ap.parse_args()
 
+    if args.closer:
+        run_closer_mode(args)
+        return
     if args.origin:
         run_origin_mode(args)
         return

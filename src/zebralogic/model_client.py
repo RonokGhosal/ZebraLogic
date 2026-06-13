@@ -51,7 +51,7 @@ class OllamaModel:
         self.calls: list[dict] = []  # one meta dict per completed call
         self.last_meta: list[dict] = []  # metas aligned with the last generate_many batch
 
-    def _call(self, prompt: str) -> tuple[str, dict]:
+    def _call(self, prompt: str, seed: int | None = None) -> tuple[str, dict]:
         t0 = time.time()
         try:
             r = self.client.post(
@@ -69,7 +69,7 @@ class OllamaModel:
                         "top_p": 0.95,
                         "top_k": 20,
                         "min_p": 0.0,
-                        "seed": self.seed,
+                        "seed": self.seed if seed is None else seed,
                     },
                 },
             )
@@ -91,15 +91,16 @@ class OllamaModel:
         meta["seconds"] = round(time.time() - t0, 1)
         return text, meta
 
-    def generate_with_meta(self, prompt: str, label: str = "") -> tuple[str, dict]:
-        text, meta = self._call(prompt)
+    def generate_with_meta(self, prompt: str, label: str = "",
+                           seed: int | None = None) -> tuple[str, dict]:
+        text, meta = self._call(prompt, seed)
         self.calls.append(meta)
         if self.progress:
             self.progress.call_done(label or "call", meta, meta["seconds"])
         return text, meta
 
-    def generate(self, prompt: str, label: str = "") -> str:
-        return self.generate_with_meta(prompt, label)[0]
+    def generate(self, prompt: str, label: str = "", seed: int | None = None) -> str:
+        return self.generate_with_meta(prompt, label, seed)[0]
 
     def generate_many(self, prompts: list[str], label: str = "") -> list[str]:
         results: list[str] = [""] * len(prompts)

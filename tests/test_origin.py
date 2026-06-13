@@ -205,6 +205,93 @@ def test_grade_read_format_tolerance():
 
 
 # --------------------------------------------------------------------------- #
+# Closer: self-referee arm + seed plumbing
+# --------------------------------------------------------------------------- #
+
+
+class SelfModel:
+    """Scripted self-referee model: records every prompt/seed; localization
+    answers come from a queue, any repair turn returns the gold grid."""
+
+    def __init__(self, checks):
+        self.checks = list(checks)
+        self.prompts: list[str] = []
+        self.seeds: list = []
+
+    def generate(self, prompt: str, label: str = "", seed=None) -> str:
+        self.prompts.append(prompt)
+        self.seeds.append(seed)
+        if "CANDIDATE solution grid" in prompt:
+            return self.checks.pop(0)
+        if "Your previous answer" in prompt:
+            return GOLD_ROWS
+        return WRONG_ROWS
+
+
+def _self_arm(model):
+    from zebralogic.origin_experiment import run_self_arm
+    from zebralogic.referee import cat_alias
+
+    p, _ = build(NL)
+    by_no, _ = clue_map(NL)
+    return run_self_arm(INST, model, WRONG_ROWS, p.constraints, by_no,
+                        cat_alias(INST), max_retries=3)
+
+
+def test_self_arm_repairs_on_own_feedback():
+    model = SelfModel(['[2]', '[]'])
+    r = _self_arm(model)
+    assert r["converged"] and r["final_full"]
+    # its own feedback quoted clue 2 verbatim — no oracle text involved
+    fix_prompt = next(p for p in model.prompts if "Your previous answer" in p)
+    assert "re-checked your grid" in fix_prompt and "dog" in fix_prompt
+
+
+def test_self_arm_false_clean_stop():
+    model = SelfModel(['[]'])  # believes its wrong grid is fine
+    r = _self_arm(model)
+    assert r["self_clean_stop"] and not r["converged"] and r["rounds"] == 1
+
+
+def test_self_arm_unusable_check_falls_back_to_binary():
+    from zebralogic.origin_experiment import FB_BINARY
+
+    model = SelfModel(["no idea", '[]'])
+    r = _self_arm(model)
+    assert r["converged"]
+    fix_prompt = next(p for p in model.prompts if "Your previous answer" in p)
+    assert FB_BINARY in fix_prompt
+
+
+def test_run_arm_varied_seed_passes_fresh_seeds():
+    from zebralogic.origin_experiment import run_arm
+    from zebralogic.referee import cat_alias
+
+    class Stubborn:
+        def __init__(self):
+            self.seeds: list = []
+
+        def generate(self, prompt, label="", seed=None):
+            self.seeds.append(seed)
+            return WRONG_ROWS
+
+    p, _ = build(NL)
+    by_no, by_con = clue_map(NL)
+    m = Stubborn()
+    r = run_arm(INST, m, "location", WRONG_ROWS, p.constraints, by_con, by_no,
+                3, cat_alias(INST), vary_seed=True, base_seed=100)
+    assert not r["converged"] and m.seeds == [101, 102, 103]
+
+
+def test_sign_test_two_sided():
+    from zebralogic.origin_experiment import sign_test_two_sided
+
+    assert sign_test_two_sided(0, 0) == 1.0
+    assert abs(sign_test_two_sided(0, 5) - 2 / 32) < 1e-12
+    assert sign_test_two_sided(3, 3) == 1.0
+
+
+# --------------------------------------------------------------------------- #
 # 3. Fisher tail
 # --------------------------------------------------------------------------- #
 

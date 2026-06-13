@@ -176,10 +176,24 @@ def fb_location(bad: list, by_con: dict, by_no: dict) -> str:
     )
 
 
+def _gen(model, prompt: str, label: str, seed=None) -> str:
+    """generate() with graceful degradation for mocks lacking label/seed kwargs."""
+    try:
+        return model.generate(prompt, label=label, seed=seed)
+    except TypeError:
+        try:
+            return model.generate(prompt, label=label)
+        except TypeError:
+            return model.generate(prompt)
+
+
 def run_arm(inst: dict, model, arm: str, first_text: str, constraints, by_con, by_no,
-            max_retries: int, alias=None) -> dict:
+            max_retries: int, alias=None, vary_seed: bool = False,
+            base_seed: int | None = None) -> dict:
     """Branch from the same failed first attempt; feedback is recomputed from
-    the CURRENT grid's violations each round (binary stays constant)."""
+    the CURRENT grid's violations each round (binary stays constant).
+    vary_seed: new sampling seed per retry — separates 'cannot fix' from
+    'fixed seed deterministically reproduced the same grid'."""
     base = prompt_A(inst)
     texts, prev = [], first_text
     bad = violations(constraints, _parse_grid(prev) or {}, alias)
@@ -192,10 +206,8 @@ def run_arm(inst: dict, model, arm: str, first_text: str, constraints, by_con, b
         else:  # interp: referee-style paraphrase of the violated constraints
             fb = interp_feedback(bad)
         prompt = f"{base}\n\nYour previous answer:\n{prev}\n\n{fb}"
-        try:
-            text = model.generate(prompt, label=f"origin {inst['id']} {arm} try{attempt + 1}")
-        except TypeError:  # models without a label kwarg (mocks)
-            text = model.generate(prompt)
+        seed = (base_seed or 0) + attempt + 1 if vary_seed else None
+        text = _gen(model, prompt, f"origin {inst['id']} {arm} try{attempt + 1}", seed)
         texts.append(text)
         attempts = attempt + 1
         prev = text
@@ -208,6 +220,46 @@ def run_arm(inst: dict, model, arm: str, first_text: str, constraints, by_con, b
         "attempts": attempts,
         "converged": not bad,
         "final_full": score_answer(prev, inst)["full"] if texts else False,
+    }
+
+
+def run_self_arm(inst: dict, model, first_text: str, constraints, by_no, alias,
+                 max_retries: int) -> dict:
+    """Self-referee: NO oracle inside the loop. The model checks its own grid
+    (localization prompt), names the violated clues itself, and retries on its
+    OWN feedback. Stops when it declares its grid clean or retries run out.
+    The oracle scores only the FINAL grid, after the loop."""
+    base = prompt_A(inst)
+    prev, log = first_text, []
+    for rnd in range(max_retries):
+        grid = _parse_grid(prev)
+        raw = _gen(model, prompt_localize(inst, grid or {}),
+                   f"closer {inst['id']} selfcheck{rnd + 1}")
+        pred = parse_localize(raw)
+        if pred == []:  # model believes the grid is clean: self-stop
+            log.append({"round": rnd + 1, "self_check": pred, "stop": "self_clean"})
+            break
+        valid = [n for n in (pred or []) if n in by_no]
+        if valid:
+            lines = [f'- Clue {n}: "{by_no[n][0]}"' for n in valid]
+            fb = ("You re-checked your grid and found it violates these clue(s):\n"
+                  + "\n".join(lines)
+                  + "\nFix the grid so EVERY clue holds. Output ONLY the JSON grid.")
+        else:  # unusable self-check: fall back to a bare retry signal
+            fb = FB_BINARY
+        text = _gen(model, f"{base}\n\nYour previous answer:\n{prev}\n\n{fb}",
+                    f"closer {inst['id']} selffix{rnd + 1}")
+        log.append({"round": rnd + 1, "self_check": pred, "raw": text})
+        prev = text
+    grid = _parse_grid(prev)
+    bad = list(constraints) if grid is None else violations(constraints, grid, alias)
+    return {
+        "log": log,
+        "final": prev,
+        "rounds": len(log),
+        "self_clean_stop": bool(log) and log[-1].get("stop") == "self_clean",
+        "converged": not bad,
+        "final_full": score_answer(prev, inst)["full"],
     }
 
 
@@ -300,6 +352,118 @@ def run_origin(instances: list[dict], model, arms: list[str], max_retries: int =
             print(f"\r    origin {done}/{len(instances)} puzzles", end="", flush=True)
     sys.stdout.write("\n")
     return rows
+
+
+# --------------------------------------------------------------------------- #
+# Closer: self-referee vs oracle feedback, paired on the SAME failures
+# --------------------------------------------------------------------------- #
+
+
+def run_closer(fail_rows: list[dict], insts: dict, model, max_retries: int = 3,
+               workers: int = 1, progress=None, save=None) -> list[dict]:
+    """fail_rows: regraded failure rows (status2 == 'failure') from the origin
+    run. Each closer row branches from the SAME saved first attempt (raw0):
+      self      : self-referee loop, fixed seed   (head-to-head vs stored 'location')
+      loc_vseed : oracle location feedback, fresh seed per retry (lock-in control)
+    Stored arm outcomes are copied over so analysis is fully paired."""
+    import sys
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    base_seed = getattr(model, "seed", 0)
+    rows, done, lock = [], 0, threading.Lock()
+
+    def one(r):
+        t0 = time.time()
+        inst = insts[r["id"]]
+        constraints = build(inst["nl"])[0].constraints
+        by_no, by_con = clue_map(inst["nl"])
+        alias = cat_alias(inst)
+        first = r["raw0"]
+        out = {
+            "id": r["id"], "size": r["size"], "tainted": r.get("tainted", False),
+            "misread": r.get("misread2", r.get("misread")),
+            "stored": {a: v.get("converged2", v.get("converged"))
+                       for a, v in (r.get("arms") or {}).items()},
+            "self": run_self_arm(inst, model, first, constraints, by_no, alias,
+                                 max_retries),
+            "loc_vseed": run_arm(inst, model, "location", first, constraints,
+                                 by_con, by_no, max_retries, alias,
+                                 vary_seed=True, base_seed=base_seed),
+        }
+        # genuine insistence: identical grid re-emitted DESPITE a fresh seed
+        seq = [_parse_grid(t) for t in [first] + out["loc_vseed"]["texts"]]
+        out["loc_vseed"]["insisted"] = any(
+            x is not None and x == y for x, y in zip(seq, seq[1:]))
+        return out, time.time() - t0
+
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        for fut in as_completed([ex.submit(one, r) for r in fail_rows]):
+            row, secs = fut.result()
+            with lock:
+                rows.append(row)
+                done += 1
+                if progress:
+                    slim = {k: row[k] for k in ("id", "size", "tainted", "misread")}
+                    slim.update(self_conv=row["self"]["converged"],
+                                vseed_conv=row["loc_vseed"]["converged"])
+                    progress.item_done("closer", slim, secs)
+                if save:
+                    save(rows)
+            print(f"\r    closer {done}/{len(fail_rows)} failures", end="", flush=True)
+    sys.stdout.write("\n")
+    return rows
+
+
+def sign_test_two_sided(b: int, c: int) -> float:
+    """Exact two-sided sign test for paired discordant counts b vs c."""
+    n = b + c
+    if n == 0:
+        return 1.0
+    lo = min(b, c)
+    p = sum(comb(n, k) for k in range(lo + 1)) / 2 ** n * 2
+    return min(p, 1.0)
+
+
+def summarize_closer(rows: list[dict]) -> str:
+    out = ["\n=========  CLOSER (self-referee vs oracle)  ========="]
+    clean = [r for r in rows if not r["tainted"]]
+    out.append(f"  failures rerun: {len(rows)} (clean {len(clean)})")
+    for name in ("self", "loc_vseed"):
+        k = sum(r[name]["converged"] for r in rows)
+        kc = sum(r[name]["converged"] for r in clean)
+        extra = ""
+        if name == "self":
+            fc = sum(1 for r in rows
+                     if r["self"]["self_clean_stop"] and not r["self"]["converged"])
+            extra = f" | FALSE self-clean stops: {fc}"
+        else:
+            ins = sum(1 for r in rows
+                      if not r[name]["converged"] and r[name]["insisted"])
+            tot = sum(1 for r in rows if not r[name]["converged"])
+            extra = f" | insisted (same grid, new seed): {ins}/{tot} unconverged"
+        out.append(f"  {name:9}: repaired {k}/{len(rows)} (clean {kc}/{len(clean)}){extra}")
+    # paired comparisons on clean failures with a stored location outcome
+    for name, label in (("self", "self vs oracle-location"),
+                        ("loc_vseed", "varied-seed vs fixed-seed location")):
+        pairs = [(r[name]["converged"], r["stored"].get("location"))
+                 for r in clean if r["stored"].get("location") is not None]
+        b = sum(1 for a, s in pairs if a and not s)   # closer arm only
+        c = sum(1 for a, s in pairs if s and not a)   # stored arm only
+        both = sum(1 for a, s in pairs if a and s)
+        p = sign_test_two_sided(b, c)
+        out.append(f"  paired {label}: both {both} | only-new {b} | only-stored {c}"
+                   f" | sign-test p={p:.3f}")
+    mis = [r for r in clean if r["misread"]]
+    rea = [r for r in clean if not r["misread"]]
+    if mis or rea:
+        out.append("  self-arm by origin: misread "
+                   f"{sum(r['self']['converged'] for r in mis)}/{len(mis)}"
+                   f" | reasoning {sum(r['self']['converged'] for r in rea)}/{len(rea)}")
+    if len(clean) < 30:
+        out.append(f"  CAUTION: {len(clean)} clean failures — paired test detects only large gaps")
+    return "\n".join(out)
 
 
 # --------------------------------------------------------------------------- #
